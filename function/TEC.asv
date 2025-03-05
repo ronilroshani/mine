@@ -1,0 +1,366 @@
+function TEC(filenameobs,cut,flag,NavPath,GOIRIUI)
+msgS = msgbox('Processing ...','warn');
+
+%% --------------------------------- Setting ------------------------------------
+% global N_MIX_path
+global GPS_flag GLO_flag GAL_flag BDS_flag QZS_flag SBS_flag 
+global stationname Cutoff order fig PG PC PR
+global_set;
+
+
+%% ------------------------------------ READ RINEX files ----------------------------------------
+stationname = upper(filenameobs(1:4));
+
+% Check file
+% checkfileRN(filenameobs,R_path);
+% filename=[R_path  filenameobs];
+
+[constellations] = goGNSS.initConstellation(GPS_flag, GLO_flag, BDS_flag, GAL_flag, QZS_flag, SBS_flag);
+
+%prepare the input for the load_RINEX_obs function
+filename_obs = multiple_RINEX_interface(filenameobs, [], []);
+
+%read observation RINEX file(s)
+[pr1_RM, ph1_RM, pr2_RM, ph2_RM, dop1_RM, dop2_RM, snr1_RM, snr2_RM, ...
+    time_GPS, time_RM, week_RM, date_RM, pos_RM, interval, antoff_RM, antmod_RM] = ...
+    load_RINEX_obs(filename_obs, constellations);
+%% ----------------------------------- Date & Time --------------------------------------
+[gpsweek,tow, Doy, ~] = greg2gps(date_RM);
+[time] = weektow2time(gpsweek,tow, 'G');
+
+year  = num2str(date_RM(1,1));
+month = num2str(date_RM(1,2),'%.2d');
+day  = num2str(date_RM(1,3),'%.2d');
+
+j=1;
+for i=1:size(date_RM,1)
+    [gps_week, gps_seconds ] = cal2gpstime(date_RM(i,:));
+    GPStime(j,1)=gps_week;
+    GPStime(j,2)=gps_seconds;
+    j=j+1;
+end
+GLOtime = GPS2UTCtime(GPStime, 18);
+BDStime = GPS2UTCtime(GPStime, 14);
+%% ----------------------------------- Sites Info --------------------------------------=
+Sites_Info.name{1,1}=filenameobs(1,1:4);
+Sites_Info.doy=1000*str2double(year(1,end-1:end))+(Doy(1));%yyddd;
+Sites_Info.coor=pos_RM';
+
+doys=unique(Sites_Info.doy);
+n_d=length(doys);
+len=length(Sites_Info.name);
+Sites_Info.RDCB_REF=linspace(0,0,len);
+SDCB_REF.doy=linspace(0,0,n_d);
+
+for i=1:n_d
+    index2= Sites_Info.doy==doys(i);
+    Sites_Info.RDCB_REF(index2)=linspace(0,0,n_d);
+    SDCB_REF.doy(i)=doys(i);
+end
+
+%% ----------------------------------- Result Read OBSERVATION Files --------------------------------------
+%% GRC
+if [GPS_flag,GLO_flag ,BDS_flag]==[1,1,1]
+%     [L1g,L2g,P1g,P2g]=clean_obs(ph1_RM(1:32,:)',ph2_RM(1:32,:)',pr1_RM(1:32,:)',pr2_RM(1:32,:)');
+%     [L1r,L2r,P1r,P2r]=clean_obs(ph1_RM(33:56,:)',ph2_RM(33:56,:)',pr1_RM(33:56,:)',pr2_RM(33:56,:)');
+%     [L1c,L2c,P1c,P2c]=clean_obs(ph1_RM(57:93,:)',ph2_RM(57:93,:)',pr1_RM(57:93,:)',pr2_RM(57:93,:)');
+    
+    % GPS
+    ObsGNSS.GPSP1=pr1_RM(1:32,:)';%P1g;
+    ObsGNSS.GPSP2=pr2_RM(1:32,:)';%P2g;
+    ObsGNSS.GPSL1=ph1_RM(1:32,:)';%L1g;
+    ObsGNSS.GPSL2=ph2_RM(1:32,:)';%L2g;
+    % GLO
+    ObsGNSS.GLOP1=pr1_RM(33:56,:)';%P1r;
+    ObsGNSS.GLOP2=pr2_RM(33:56,:)';%P2r;
+    ObsGNSS.GLOL1=ph1_RM(33:56,:)';%L1r;
+    ObsGNSS.GLOL2=ph2_RM(33:56,:)';%L2r;
+    % BDS
+    ObsGNSS.BDSP1=pr1_RM(57:102,:)';%P1c;
+    ObsGNSS.BDSP2=pr2_RM(57:102,:)';%P2c;
+    ObsGNSS.BDSL1=ph1_RM(57:102,:)';%L1c;
+    ObsGNSS.BDSL2=ph2_RM(57:102,:)';%L2c;
+    
+    LengthSAT=[size(ObsGNSS.GPSP1,2),size(ObsGNSS.GLOP1,2),size(ObsGNSS.BDSP1,2)];
+    [~,~,F,~,~]=info_FreWaveAlphaBeta('GRC',LengthSAT);
+    
+    nSatTot=[constellations.GPS.numSat;constellations.GLONASS.numSat;constellations.BeiDou.numSat];%[PRN.GPS;PRN.GLO;PRN.GAL;PRN.BDS];
+    
+    SDCB_REF.value.gps=zeros(n_d,nSatTot(1));
+    SDCB_REF.value.glo=zeros(n_d,nSatTot(2));
+    SDCB_REF.value.bds=zeros(n_d,nSatTot(3));
+    %% --------------------------------- READ NAVIGATION files -----------------------------------
+    filenavGPS=[filenameobs(1:8) '.' year(:,3:4) 'N'];
+    filenavGLO=[filenameobs(1:8) '.' year(:,3:4) 'G'];
+    filenavBDS=[filenameobs(1:8) '.' year(:,3:4) 'C'];
+    
+    brdc_gps = loadRINEXNavigation('G',NavPath,filenavGPS);
+    brdc_glonass = loadRINEXNavigation('R',NavPath,filenavGLO);
+    brdc_beidou = loadRINEXNavigation('C',NavPath,filenavBDS);
+    %% GR
+elseif [GPS_flag,GLO_flag ,BDS_flag]==[1,1,0]
+%     [L1g,L2g,P1g,P2g]=clean_obs(ph1_RM(1:32,:)',ph2_RM(1:32,:)',pr1_RM(1:32,:)',pr2_RM(1:32,:)');
+%     [L1r,L2r,P1r,P2r]=clean_obs(ph1_RM(33:56,:)',ph2_RM(33:56,:)',pr1_RM(33:56,:)',pr2_RM(33:56,:)');
+
+    % GPS
+    ObsGNSS.GPSP1=pr1_RM(1:32,:)';%P1g;
+    ObsGNSS.GPSP2=pr2_RM(1:32,:)';%P2g;
+    ObsGNSS.GPSL1=ph1_RM(1:32,:)';%L1g;
+    ObsGNSS.GPSL2=ph2_RM(1:32,:)';%L2g;
+    % GLO
+    ObsGNSS.GLOP1=pr1_RM(33:56,:)';%P1r;
+    ObsGNSS.GLOP2=pr2_RM(33:56,:)';%P2r;
+    ObsGNSS.GLOL1=ph1_RM(33:56,:)';%L1r;
+    ObsGNSS.GLOL2=ph2_RM(33:56,:)';%L2r;
+
+     
+    LengthSAT=[size(ObsGNSS.GPSP1,2),size(ObsGNSS.GLOP1,2)];
+    [~,~,F,~,~]=info_FreWaveAlphaBeta('GR',LengthSAT);
+    nSatTot=[constellations.GPS.numSat;constellations.GLONASS.numSat];%[PRN.GPS;PRN.GLO;PRN.GAL;PRN.BDS];
+    
+    SDCB_REF.value.gps=zeros(n_d,nSatTot(1));
+    SDCB_REF.value.glo=zeros(n_d,nSatTot(2));
+   
+    %% --------------------------------- READ NAVIGATION files -----------------------------------
+    filenavGPS=[filenameobs(1:8) '.' year(:,3:4) 'N'];
+    filenavGLO=[filenameobs(1:8) '.' year(:,3:4) 'G'];
+    
+    brdc_gps = loadRINEXNavigation('G',NavPath,filenavGPS);
+    brdc_glonass = loadRINEXNavigation('R',NavPath,filenavGLO);
+    
+
+    %% RC
+elseif [GPS_flag,GLO_flag ,BDS_flag]==[0,1,1]
+%     [L1g,L2g,P1g,P2g]=clean_obs(ph1_RM(1:32,:)',ph2_RM(1:32,:)',pr1_RM(1:32,:)',pr2_RM(1:32,:)');
+%     [L1r,L2r,P1r,P2r]=clean_obs(ph1_RM(33:56,:)',ph2_RM(33:56,:)',pr1_RM(33:56,:)',pr2_RM(33:56,:)');
+%     [L1c,L2c,P1c,P2c]=clean_obs(ph1_RM(57:93,:)',ph2_RM(57:93,:)',pr1_RM(57:93,:)',pr2_RM(57:93,:)');
+    
+
+    % GLO
+    ObsGNSS.GLOP1=pr1_RM(1:24,:)';%P1r;
+    ObsGNSS.GLOP2=pr2_RM(1:24,:)';%P2r;
+    ObsGNSS.GLOL1=ph1_RM(1:24,:)';%L1r;
+    ObsGNSS.GLOL2=ph2_RM(1:24,:)';%L2r;
+    % BDS
+    ObsGNSS.BDSP1=pr1_RM(25:70,:)';%P1c;
+    ObsGNSS.BDSP2=pr2_RM(25:70,:)';%P2c;
+    ObsGNSS.BDSL1=ph1_RM(25:70,:)';%L1c;
+    ObsGNSS.BDSL2=ph2_RM(25:70,:)';%L2c;
+    
+    LengthSAT=[size(ObsGNSS.GLOP1,2),size(ObsGNSS.BDSP1,2)];
+    [~,~,F,~,~]=info_FreWaveAlphaBeta('RC',LengthSAT);
+    
+    nSatTot=[constellations.GLONASS.numSat;constellations.BeiDou.numSat];%[PRN.GPS;PRN.GLO;PRN.GAL;PRN.BDS];
+    
+    SDCB_REF.value.glo=zeros(n_d,nSatTot(1));
+    SDCB_REF.value.bds=zeros(n_d,nSatTot(2));
+    %% --------------------------------- READ NAVIGATION files -----------------------------------
+    filenavGLO=[filenameobs(1:8) '.' year(:,3:4) 'G'];
+    filenavBDS=[filenameobs(1:8) '.' year(:,3:4) 'C'];
+    
+    brdc_glonass = loadRINEXNavigation('R',NavPath,filenavGLO);
+    brdc_beidou = loadRINEXNavigation('C',NavPath,filenavBDS);
+    %% GC
+elseif [GPS_flag,GLO_flag ,BDS_flag]==[1,0,1]
+%     [L1g,L2g,P1g,P2g]=clean_obs(ph1_RM(1:32,:)',ph2_RM(1:32,:)',pr1_RM(1:32,:)',pr2_RM(1:32,:)');
+%     [L1c,L2c,P1c,P2c]=clean_obs(ph1_RM(33:78,:)',ph2_RM(33:78,:)',pr1_RM(33:78,:)',pr2_RM(33:78,:)');
+    
+    % GPS
+    ObsGNSS.GPSP1=pr1_RM(1:32,:)';%P1g;
+    ObsGNSS.GPSP2=pr2_RM(1:32,:)';%P2g;
+    ObsGNSS.GPSL1=ph1_RM(1:32,:)';%L1g;
+    ObsGNSS.GPSL2=ph2_RM(1:32,:)';%L2g;
+    
+    % BDS
+    ObsGNSS.BDSP1=pr1_RM(33:78,:)';%P1c;
+    ObsGNSS.BDSP2=pr2_RM(33:78,:)';%P2c;
+    ObsGNSS.BDSL1=ph1_RM(33:78,:)';%L1c;
+    ObsGNSS.BDSL2=ph2_RM(33:78,:)';%L2c;
+    
+    LengthSAT=[size(ObsGNSS.GPSP1,2),size(ObsGNSS.BDSP1,2)];
+    [~,~,F,~,~]=info_FreWaveAlphaBeta('GC',LengthSAT);
+    nSatTot=[constellations.GPS.numSat;constellations.BeiDou.numSat];%[PRN.GPS;PRN.GLO;PRN.GAL;PRN.BDS];
+    
+    SDCB_REF.value.gps=zeros(n_d,nSatTot(1));
+    SDCB_REF.value.bds=zeros(n_d,nSatTot(2));
+    %% --------------------------------- READ NAVIGATION files -----------------------------------
+    filenavGPS=[filenameobs(1:8) '.' year(:,3:4) 'N'];
+    filenavBDS=[filenameobs(1:8) '.' year(:,3:4) 'C'];
+    
+    brdc_gps = loadRINEXNavigation('G',NavPath,filenavGPS);
+    brdc_beidou = loadRINEXNavigation('C',NavPath,filenavBDS);
+    %% G
+elseif [GPS_flag,GLO_flag ,BDS_flag]==[1,0,0]
+%     [L1g,L2g,P1g,P2g]=clean_obs(ph1_RM(1:32,:)',ph2_RM(1:32,:)',pr1_RM(1:32,:)',pr2_RM(1:32,:)');
+    
+    % GPS
+    ObsGNSS.GPSP1=pr1_RM(1:32,:)';%P1g;
+    ObsGNSS.GPSP2=pr2_RM(1:32,:)';%P2g;
+    ObsGNSS.GPSL1=ph1_RM(1:32,:)';%L1g;
+    ObsGNSS.GPSL2=ph2_RM(1:32,:)';%L2g;
+
+    
+    LengthSAT=[size(ObsGNSS.GPSP1,2)];
+    [~,~,F,~,~]=info_FreWaveAlphaBeta('G',LengthSAT);
+    nSatTot=[constellations.GPS.numSat];%[PRN.GPS;PRN.GLO;PRN.GAL;PRN.BDS];
+    
+    SDCB_REF.value.gps=zeros(n_d,nSatTot(1));
+    
+    %% --------------------------------- READ NAVIGATION files -----------------------------------
+    filenavGPS=[filenameobs(1:8) '.' year(:,3:4) 'N'];
+    brdc_gps = loadRINEXNavigation('G',NavPath,filenavGPS);
+    
+        %% R
+elseif [GPS_flag,GLO_flag ,BDS_flag]==[0,1,0]
+%     [L1g,L2g,P1g,P2g]=clean_obs(ph1_RM(1:32,:)',ph2_RM(1:32,:)',pr1_RM(1:32,:)',pr2_RM(1:32,:)');
+
+    % GLO
+    ObsGNSS.GLOP1=pr1_RM(1:24,:)';%P1r;
+    ObsGNSS.GLOP2=pr2_RM(1:24,:)';%P2r;
+    ObsGNSS.GLOL1=ph1_RM(1:24,:)';%L1r;
+    ObsGNSS.GLOL2=ph2_RM(1:24,:)';%L2r;
+
+    
+    LengthSAT=[size(ObsGNSS.GLOP1,2)];
+    [~,~,F,~,~]=info_FreWaveAlphaBeta('R',LengthSAT);
+    nSatTot=[constellations.GLONASS.numSat];%[PRN.GPS;PRN.GLO;PRN.GAL;PRN.BDS];
+    
+    SDCB_REF.value.glo=zeros(n_d,nSatTot(1));
+    
+    
+    %% --------------------------------- READ NAVIGATION files -----------------------------------
+    filenavGLO=[filenameobs(1:8) '.' year(:,3:4) 'G'];
+    brdc_glonass = loadRINEXNavigation('R',NavPath,filenavGLO);
+    
+        %% C
+elseif [GPS_flag,GLO_flag ,BDS_flag]==[0,0,1]
+%     [L1g,L2g,P1g,P2g]=clean_obs(ph1_RM(1:32,:)',ph2_RM(1:32,:)',pr1_RM(1:32,:)',pr2_RM(1:32,:)');
+%     [L1c,L2c,P1c,P2c]=clean_obs(ph1_RM(33:78,:)',ph2_RM(33:78,:)',pr1_RM(33:78,:)',pr2_RM(33:78,:)');
+
+    
+    % BDS
+    ObsGNSS.BDSP1=pr1_RM(1:46,:)';%P1c;
+    ObsGNSS.BDSP2=pr2_RM(1:46,:)';%P2c;
+    ObsGNSS.BDSL1=ph1_RM(1:46,:)';%L1c;
+    ObsGNSS.BDSL2=ph2_RM(1:46,:)';%L2c;
+    
+    LengthSAT=[size(ObsGNSS.BDSP1,2)];
+    [~,~,F,~,~]=info_FreWaveAlphaBeta('C',LengthSAT);
+    nSatTot=[constellations.BeiDou.numSat];%[PRN.GPS;PRN.GLO;PRN.GAL;PRN.BDS];
+    
+    SDCB_REF.value.bds=zeros(n_d,nSatTot(1));
+    %% --------------------------------- READ NAVIGATION files -----------------------------------
+    filenavBDS=[filenameobs(1:8) '.' year(:,3:4) 'C'];
+    brdc_beidou = loadRINEXNavigation('C',NavPath,filenavBDS);
+    
+end
+
+
+%% -------------------------------- Estimation of Satellite Coordinates ---------------------------------
+%% pos gps
+if GPS_flag==1
+    for i0 = 1 : size(brdc_gps.eph ,2)
+        icon = "settings\icon\icons8-waiting-50.png";
+        d = uiprogressdlg(GOIRIUI,'Title','Computing GPS Position',...
+            'Icon',icon,'ShowPercentage','on');
+        d.Value = (i0/size(brdc_gps.eph ,2));
+        drawnow
+
+        [XS,~] = getSatPosGPS(GPStime,brdc_gps.eph{1,i0});
+        POSItion.gpsx(:,i0)=XS(:,1);
+        POSItion.gpsy(:,i0)=XS(:,2);
+        POSItion.gpsz(:,i0)=XS(:,3);
+        XS=[];
+        
+    end
+    close(d)
+    for tn=1:size(ObsGNSS.GPSP2,2)
+        for tm=1:size(ObsGNSS.GPSP2,1)
+            if (ObsGNSS.GPSP2(tm,tn)==0)
+            POSItion.gpsx(tm,tn)=0;
+            POSItion.gpsy(tm,tn)=0;
+            POSItion.gpsz(tm,tn)=0;
+            end
+        end
+    end
+
+
+end
+
+
+%% pos glonass
+if GLO_flag==1
+    for i1 = 1 : size(brdc_glonass.eph ,2)
+        icon = "settings\icon\icons8-waiting-50.png";
+        d = uiprogressdlg(GOIRIUI,'Title','Computing GLONASS Position',...
+            'Icon',icon,'ShowPercentage','on');
+        d.Value = (i1/size(brdc_glonass.eph ,2));
+        drawnow
+        for j = 1:size(GLOtime,1)
+            eph = brdc_glonass.eph{1,i1};
+            delta = abs(eph(8,:)'-GLOtime(j,2));
+            IDmin = find(delta == min(delta));
+            eph1 = eph(:,IDmin);
+        [XS] = getSatPosGLO(GLOtime(j,:),eph1);
+        POSItion.glox(j,i1)=XS(1);
+        POSItion.gloy(j,i1)=XS(2);
+        POSItion.gloz(j,i1)=XS(3);
+        XS=[];
+        end
+    end
+    close(d)
+    for tn=1:size(ObsGNSS.GLOP2,2)
+        for tm=1:size(ObsGNSS.GLOP2,1)
+            if (ObsGNSS.GLOP2(tm,tn)==0)
+            POSItion.glox(tm,tn)=0;
+            POSItion.gloy(tm,tn)=0;
+            POSItion.gloz(tm,tn)=0;
+            end
+        end
+    end
+
+end
+%% pos beidou
+if BDS_flag==1
+    for i3 = 1 : size(brdc_beidou.eph ,2)
+        icon = "settings\icon\icons8-waiting-50.png";
+        d = uiprogressdlg(GOIRIUI,'Title','Computing BeiDou Position',...
+            'Icon',icon,'ShowPercentage','on');
+        d.Value = (i3/size(brdc_beidou.eph ,2));
+        drawnow
+        if isempty(brdc_beidou.eph{1,i3})
+            POSItion.bdsx(:,i3)= zeros(size(ObsGNSS.BDSP1,1),1);
+            POSItion.bdsy(:,i3)=zeros(size(ObsGNSS.BDSP1,1),1);
+            POSItion.bdsz(:,i3)=zeros(size(ObsGNSS.BDSP1,1),1);
+        else
+            [XS,~] = getSatPosBDS(BDStime,brdc_beidou.eph{1,i3});
+            POSItion.bdsx(:,i3)=XS(:,1);
+            POSItion.bdsy(:,i3)=XS(:,2);
+            POSItion.bdsz(:,i3)=XS(:,3);
+            XS=[];
+        end
+    end
+    close(d)
+    for tn=1:size(ObsGNSS.BDSP2,2)
+        for tm=1:size(ObsGNSS.BDSP2,1)
+            if (ObsGNSS.BDSP2(tm,tn)==0)
+                POSItion.bdsx(tm,tn)=0;
+                POSItion.bdsy(tm,tn)=0;
+                POSItion.bdsz(tm,tn)=0;
+            end
+        end
+    end
+end
+
+% LEN=[size(POSItion.gpsx,2);size(POSItion.bdsx,2);size(POSItion.glox,2)];
+
+ 
+
+msgbox ('TEC calculating ...','none','non-modal')
+main_cal_TEC(POSItion,ObsGNSS,Sites_Info,SDCB_REF,F,date_RM,Doy);
+
+
+
+
+close(msgS)
+msgbox ('End of processing ...','none','non-modal')
